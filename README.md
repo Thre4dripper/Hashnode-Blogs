@@ -10,6 +10,11 @@ This repository contains the source code and articles for my blogs on [Hashnode]
 
 You can read all my blogs on my Hashnode profile: [Here](https://blogs.ijlalahmad.tech/)
 
+## Blog Posts 📚 (Updates Automatically)
+
+<!-- BLOGS:START -->
+<!-- BLOGS:END -->
+
 ## 🎯 Purpose of This Repository
 
 - **Archive**: A synced version of my Hashnode posts.

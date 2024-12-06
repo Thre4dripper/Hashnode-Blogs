@@ -30,10 +30,15 @@ jobs:
       - name: Fetch Hashnode Blogs and Update README
         run: node scripts/updateReadme.js
 
+      - name: Check for Changes
+        id: check_changes
+        run: git diff --exit-code README.md || echo "README has changes"
+
       - name: Commit and Push Changes
+        if: steps.check_changes.outputs.run == 'README has changes'
         run: |
           git config --local user.name "GitHub Actions"
           git config --local user.email "actions@github.com"
           git add README.md
-          git commit -m "Update blogs section in README"
+          git commit -m "Update README with Hashnode Blogs"
           git push

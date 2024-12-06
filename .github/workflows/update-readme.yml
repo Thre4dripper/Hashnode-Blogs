@@ -13,6 +13,8 @@ permissions:
 jobs:
   update-readme:
     runs-on: ubuntu-latest
+    outputs:
+      changes_found: ${{ steps.check_changes.outputs.changes_found }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -30,12 +32,13 @@ jobs:
       - name: Fetch Hashnode Blogs and Update README
         run: node scripts/updateReadme.js
 
-      - name: Check for Changes
+      - name: Check for Changes in README
         id: check_changes
-        run: git diff --exit-code README.md || echo "README has changes"
+        run: |
+          git diff --quiet README.md || echo "changes_found=true" >> $GITHUB_OUTPUT
 
       - name: Commit and Push Changes
-        if: steps.check_changes.outputs.run == 'README has changes'
+        if: steps.check_changes.outputs.changes_found == 'true'
         run: |
           git config --local user.name "GitHub Actions"
           git config --local user.email "actions@github.com"

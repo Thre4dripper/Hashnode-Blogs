@@ -10,7 +10,7 @@ This repository contains the source code and articles for my blogs on [Hashnode]
 
 You can read all my blogs on my Hashnode profile: [Here](https://blogs.ijlalahmad.tech/)
 
-## Blog Posts 📚 (Updates Automatically)
+## 📜 Featured Blogs (Updates Automatically 🤖)
 
 <!-- BLOGS:START -->
 

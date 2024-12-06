@@ -8,7 +8,7 @@ const HASHNODE_HOST = "ijlalahmad.hashnode.dev";
 const query = `
   query SearchPostsOfPublication {
     publication(host: "${HASHNODE_HOST}") {
-      posts(first: 5) {
+      posts(first: 4) {
         edges {
           node {
             title

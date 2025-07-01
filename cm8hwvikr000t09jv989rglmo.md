@@ -28,6 +28,139 @@ GitHub Actions is a **CI/CD (Continuous Integration/Continuous Deployment) platf
 
 It provides **full-fledged virtual machines** where you can run virtually any automation script, making it highly flexible and easily integrable with various tools and services. Whether you need to build an APK, deploy a website, or run scheduled tasks, GitHub Actions allows you to streamline your workflow efficiently.
 
+# Maintaining a Constant App Fingerprint for OAuth (Google Sign-In, etc.)
+
+If our Android app integrates with services like **Google OAuth**, we’re required to provide the **SHA1 fingerprint** of our app’s signing key. When running the app in **debug mode**, this fingerprint is generated from our local debug keystore.
+
+However, when the app is built on a different machine—such as a **GitHub Actions CI runner**—a new debug keystore is created, resulting in a **different SHA1 fingerprint**. This mismatch can cause OAuth-based authentication (like Google Sign-In) to **fail** on CI-generated APKs.
+
+### Solution: Use a Dedicated Release Keystore
+
+To ensure a **consistent SHA1 fingerprint** across all builds (local, CI, production):
+
+* Create a **dedicated release keystore**.
+    
+* Use this keystore to **sign our release builds**, both locally and in CI.
+    
+* Share the keystore **securely** with GitHub Actions (e.g., use **GitHub Secrets** and encode it in **base64**).
+    
+* Register the **SHA1 fingerprint** of this keystore with our OAuth providers (Google, Facebook, etc.).
+    
+
+> **Important:** The keystore is a **critical asset**. It’s used to sign APKs for the **Google Play Store**, and losing access can prevent future updates. If leaked, attackers could impersonate our app.  
+> **We must never commit it to our repository. It should be stored securely.**
+
+## Create a Signed Release Build
+
+To generate a signed release build, follow these steps:
+
+### Step 1: Create a Keystore
+
+1. Open Android Studio.
+    
+2. Go to **Build → Generate Signed Bundle / APK**.
+    
+3. Choose **APK** or **App Bundle**, then click **Next**.
+    
+4. Click **Create new** to generate a new keystore.
+    
+5. Save the keystore file (`.jks`) securely.
+    
+6. Set a **key alias**, **key password**, and **keystore password** — and make sure to **remember** them.
+    
+
+### Step 2: Configure `build.gradle`
+
+In your **module-level** `build.gradle` file, add the `signingConfigs` and `buildTypes` blocks inside the `android {}` section:
+
+```bash
+signingConfigs {
+    release {
+        def localProps = new Properties()
+        def localPropsFile = rootProject.file("local.properties")
+        if (localPropsFile.exists()) {
+            localProps.load(localPropsFile.newDataInputStream())
+        }
+
+        def getEnvOrLocalProp = { key ->
+            System.getenv(key) ?: localProps.getProperty(key)
+        }
+
+        def keystorePath = getEnvOrLocalProp("RELEASE_KEYSTORE_PATH") ?: file("./keystore.jks")
+        if (keystorePath != null) {
+            storeFile file(keystorePath)
+            storePassword getEnvOrLocalProp("RELEASE_STORE_PASSWORD")
+            keyAlias getEnvOrLocalProp("RELEASE_KEY_ALIAS")
+            keyPassword getEnvOrLocalProp("RELEASE_KEY_PASSWORD")
+        } else {
+            println("⚠️ RELEASE_KEYSTORE_PATH is missing — skipping release signing")
+        }
+    }
+}
+
+buildTypes {
+    debug {
+        versionNameSuffix "-debug"
+        minifyEnabled false
+        signingConfig signingConfigs.debug
+        proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+    }
+    release {
+        minifyEnabled false
+        signingConfig signingConfigs.release
+        proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+    }
+}
+```
+
+### Securely Handle Credentials
+
+Instead of hardcoding sensitive credentials like keystore passwords in `build.gradle`, we load them from:
+
+* **Environment variables** (CI/CD pipelines)
+    
+* Or from a `local.properties` file (for local development)
+    
+
+> **Important:** Never commit `local.properties` to version control. It contains sensitive data.
+
+### Step 3: Add Keystore to GitHub Actions
+
+Since the keystore is a **binary file**, we can't directly store it in GitHub Secrets. Instead, we:
+
+#### Convert Keystore to Base64
+
+```bash
+base64 -w 0 keystore.jks > keystore.jks.base64
+```
+
+> On macOS (or if `-w` flag fails), use:
+> 
+> ```bash
+> base64 keystore.jks > keystore.jks.base64
+> ```
+
+#### Add to GitHub Secrets
+
+1. Go to your repository on GitHub.
+    
+2. Navigate to **Settings → Secrets → Actions**.
+    
+3. Create a new secret called `RELEASE_KEYSTORE_BASE64`.
+    
+4. Paste the contents of `keystore.jks.base64`.
+    
+
+#### Convert Base64 Back to Keystore in CI
+
+In your GitHub Actions workflow, decode the base64 back into a `.jks` file:
+
+```bash
+echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > app/keystore.jks
+```
+
+Now, your CI/CD pipeline can generate signed APKs or App Bundles with a consistent fingerprint and secure key management.
+
 # Setting Up Your Workflow
 
 Workflows are automation scripts that allow us to define and execute specific tasks automatically. In GitHub, these workflows are stored inside a special folder called `.github/workflows` at the root level of your repository.
@@ -94,14 +227,14 @@ To automate the APK generation and release process, we’ll define three jobs:
 
 ### **1\. Setup**
 
-* Generates required secret files inside the workflow (such as `google-services.json` for Firebase).
+* Generates required secret files inside the workflow (such as `google-services.json` for Firebase) and (`keystore.jks` for keystore for signing release version of application).
     
 
 ### **2\. Build**
 
-* Compiles and builds the APK using Gradle.
+* Prepares the release keystore and its secrets in the current session.
     
-* We use the **debug** version in this example, but you can configure it to generate a **release** version as well.
+* Compiles and builds the APK using Gradle.
     
 
 ### **3\. Create Release**
@@ -168,7 +301,7 @@ This ensures your secrets are securely injected into the build process without b
 The `setup` job is responsible for preparing the environment, generating necessary configuration files, and handling secrets securely.
 
 ```yaml
-setup:
+  setup:
     name: Setup
     runs-on: ubuntu-latest
     outputs:
@@ -193,6 +326,10 @@ setup:
         id: sha
         run: echo "sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
+      - name: Create keystore
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > app/keystore.jks
+
       - name: Upload config files
         uses: actions/upload-artifact@v4
         with:
@@ -200,6 +337,7 @@ setup:
           path: |
             app/google-services.json
             app/src/main/res/values/secrets.xml
+            app/keystore.jks
           retention-days: 1
 ```
 
@@ -237,13 +375,23 @@ build:
 
 This step ensures that the environment is ready with the correct Java version and Gradle configuration.
 
+### Set Keystore Env Variables in Github Environment
+
+```yaml
+      - name: Export signing env vars
+        run: |
+          echo "RELEASE_STORE_PASSWORD=${{ secrets.RELEASE_STORE_PASSWORD }}" >> $GITHUB_ENV
+          echo "RELEASE_KEY_ALIAS=${{ secrets.RELEASE_KEY_ALIAS }}" >> $GITHUB_ENV
+          echo "RELEASE_KEY_PASSWORD=${{ secrets.RELEASE_KEY_PASSWORD }}" >> $GITHUB_ENV
+```
+
 ## **Running the Gradle Build Process**
 
 Once the environment is set up, we can proceed with building the APK using Gradle.
 
 ```yaml
       - name: Build with Gradle
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleRelease
 ```
 
 > To ensure that the generated APK can be accessed in the next job, we upload it as an artifact.
@@ -325,7 +473,7 @@ For production builds, the APK must be signed before uploading to Google Play. T
 ```yaml
 - name: Decode Keystore
   run: |
-    echo "${{ secrets.ANDROID_KEYSTORE }}" | base64 --decode > app/keystore.jks
+    echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 --decode > app/keystore.jks
 
 - name: Sign APK
   run: |
@@ -356,16 +504,16 @@ If you want to automate the deployment to Google Play, you can use **Google Play
 # **Full Workflow File**
 
 ```yaml
-name: Build APK  # Name of the workflow
+name: Build Apk
 
 on:
   push:
     branches:
-      - main  # Runs when code is pushed to the main branch
-  workflow_dispatch:  # Allows manual triggering of the workflow
+      - main
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}  # Prevents duplicate runs on the same branch
+  group: ${{ github.workflow }}-${{ github.ref }}
 
 permissions:
   contents: write
@@ -379,12 +527,12 @@ jobs:
     outputs:
       short_sha: ${{ steps.sha.outputs.sha }}
     steps:
-      - name: Create google-services.json  # Creates Firebase configuration file
+      - name: Create google-services.json
         run: |
           mkdir -p app
           echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > app/google-services.json
 
-      - name: Create secrets.xml  # Stores API keys securely in a resource file
+      - name: Create secrets.xml
         run: |
           mkdir -p app/src/main/res/values
           cat << EOF > app/src/main/res/values/secrets.xml
@@ -394,82 +542,93 @@ jobs:
           </resources>
           EOF
 
-      - name: Get short SHA  # Extracts a short commit hash for versioning
+      - name: Get short SHA
         id: sha
         run: echo "sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
-      - name: Upload config files  # Stores secret files for later use
+      - name: Create keystore
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > app/keystore.jks
+
+      - name: Upload config files
         uses: actions/upload-artifact@v4
         with:
           name: config-files
           path: |
             app/google-services.json
             app/src/main/res/values/secrets.xml
+            app/keystore.jks
           retention-days: 1
 
   build:
     name: Build APK
     runs-on: ubuntu-latest
-    needs: setup  # Ensures setup job is completed first
+    needs: setup
     steps:
-      - name: Checkout code  # Clones the repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up JDK  # Installs Java for building the APK
+      - name: Set up JDK
         uses: actions/setup-java@v4
         with:
           distribution: 'oracle'
           java-version: '17'
-          cache: gradle  # Caches dependencies to speed up builds
+          cache: gradle
 
-      - name: Download config files  # Retrieves secret files
+      - name: Download config files
         uses: actions/download-artifact@v4
         with:
           name: config-files
           path: ./app
 
-      - name: Change Gradle Wrapper Permissions  # Ensures the Gradle wrapper script is executable
+      - name: Change Gradle Wrapper Permissions
         run: chmod +x gradlew
 
-      - name: Build with Gradle  # Compiles the APK
-        run: ./gradlew assembleDebug
+      - name: Export signing env vars
+        run: |
+          echo "RELEASE_STORE_PASSWORD=${{ secrets.RELEASE_STORE_PASSWORD }}" >> $GITHUB_ENV
+          echo "RELEASE_KEY_ALIAS=${{ secrets.RELEASE_KEY_ALIAS }}" >> $GITHUB_ENV
+          echo "RELEASE_KEY_PASSWORD=${{ secrets.RELEASE_KEY_PASSWORD }}" >> $GITHUB_ENV
 
-      - name: Upload APK  # Stores the built APK for the next job
+      - name: Build with Gradle
+        run: ./gradlew assembleRelease
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: app-release
+          path: app/build/outputs/apk/release/app-release.apk
           retention-days: 1
 
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [ setup, build ]  # Ensures previous jobs are completed first
+    needs: [ setup,build ]
     steps:
-      - name: Checkout code  # Clones the repository with full history
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Download APK  # Retrieves the built APK
+      - name: Download APK
         uses: actions/download-artifact@v4
         with:
-          name: app-debug
-          path: app/build/outputs/apk/debug
+          name: app-release
+          path: app/build/outputs/apk/release
 
-      - name: Get Last Tag  # Fetches the latest version tag
+      - name: Get Last Tag
         id: get_last_tag
         run: |
           git fetch --tags
           LAST_TAG=$(git describe --abbrev=0 --tags || echo "none")
           echo "last_tag=${LAST_TAG}" >> $GITHUB_OUTPUT
 
-      - name: Generate New Tag  # Creates a new version tag using commit SHA
+      - name: Generate New Tag
         id: generate_new_tag
         run: |
           echo "new_tag=1.0-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
-      - name: Create Release  # Publishes the new APK as a GitHub release
+      - name: Create Release
         id: create_release
         uses: softprops/action-gh-release@v2
         env:
@@ -480,10 +639,10 @@ jobs:
           body: |
             ## What's Changed
             **Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.get_last_tag.outputs.last_tag }}...${{ steps.generate_new_tag.outputs.new_tag }}
-          draft: false  # Publishes the release immediately
+          draft: false
           prerelease: false
           files: |
-            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/app-release.apk
 ```
 
 ![](https://cdn.hashnode.com/res/hashnode/image/upload/v1742508753378/3494064e-08c8-4b74-b9b0-e59755fbc95d.png align="center")
